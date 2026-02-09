@@ -1,8 +1,8 @@
 {
   "name": "chat-searcher",
   "displayName": "Chat Searcher",
-  "description": "Search across all your AI chat history with BM25 ranking. Works with Cursor, Windsurf, and other VS Code-based IDEs. Find any past conversation, view full chat with correct user/assistant roles, and copy to current chat.",
-  "version": "0.1.0",
+  "description": "Never lose an AI conversation again. Instantly search all your chat history across every workspace. Works with Cursor, Windsurf, and other VS Code-based IDEs.",
+  "version": "0.1.2",
   "publisher": "alexandergo",
   "license": "MIT",
   "repository": {

@@ -41,6 +41,7 @@ exports.getChatContentFromWorkspaceStorage = getChatContentFromWorkspaceStorage;
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
+const child_process_1 = require("child_process");
 const sql_js_1 = __importDefault(require("sql.js"));
 function getCursorStoragePath() {
     const home = os.homedir();
@@ -116,13 +117,108 @@ function getComposerIdsFromDb(db) {
         return [];
     }
 }
-function getBubblesForComposer(globalDb, composerId) {
-    const prefix = `bubbleId:${escapeSqlString(composerId)}:`;
+function rawBubblesToMessages(bubbles) {
+    if (bubbles.length === 0)
+        return [];
+    if (bubbles[0].createdAt != null) {
+        bubbles.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    }
+    return bubbles.map(b => ({
+        role: b.type === 1 ? 'user' : 'assistant',
+        content: b.text,
+        timestamp: b.createdAt,
+    }));
+}
+function loadAllBubblesFromGlobalCli(globalDbPath) {
     try {
+        const sql = [
+            "SELECT key,",
+            "json_extract(value, '$.type') as type,",
+            "COALESCE(json_extract(value, '$.text'), json_extract(value, '$.rawText'), json_extract(value, '$.content')) as text,",
+            "json_extract(value, '$.createdAt') as createdAt",
+            "FROM cursorDiskKV",
+            "WHERE key LIKE 'bubbleId:%'",
+            "AND json_extract(value, '$.type') IN (1, 2)",
+        ].join(' ');
+        const output = (0, child_process_1.execFileSync)('sqlite3', ['-json', globalDbPath, sql], {
+            maxBuffer: 200 * 1024 * 1024,
+            encoding: 'utf-8',
+        }).toString();
+        const rows = JSON.parse(output || '[]');
+        const composerBubbles = new Map();
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row.text || !row.text.trim())
+                continue;
+            const firstColon = row.key.indexOf(':');
+            const secondColon = row.key.indexOf(':', firstColon + 1);
+            if (firstColon < 0 || secondColon < 0)
+                continue;
+            const composerId = row.key.substring(firstColon + 1, secondColon);
+            let arr = composerBubbles.get(composerId);
+            if (!arr) {
+                arr = [];
+                composerBubbles.set(composerId, arr);
+            }
+            arr.push({
+                type: row.type,
+                text: row.text.trim(),
+                createdAt: typeof row.createdAt === 'number' ? row.createdAt : undefined,
+                order: i,
+            });
+        }
+        const result = new Map();
+        for (const [composerId, bubbles] of composerBubbles) {
+            result.set(composerId, rawBubblesToMessages(bubbles));
+        }
+        return result;
+    }
+    catch {
+        return null;
+    }
+}
+function getBubblesForComposerCli(globalDbPath, composerId) {
+    try {
+        const escaped = escapeSqlString(composerId);
+        const sql = [
+            "SELECT",
+            "json_extract(value, '$.type') as type,",
+            "COALESCE(json_extract(value, '$.text'), json_extract(value, '$.rawText'), json_extract(value, '$.content')) as text,",
+            "json_extract(value, '$.createdAt') as createdAt",
+            "FROM cursorDiskKV",
+            `WHERE key LIKE 'bubbleId:${escaped}:%'`,
+            "AND json_extract(value, '$.type') IN (1, 2)",
+        ].join(' ');
+        const output = (0, child_process_1.execFileSync)('sqlite3', ['-json', globalDbPath, sql], {
+            maxBuffer: 50 * 1024 * 1024,
+            encoding: 'utf-8',
+        }).toString();
+        const rows = JSON.parse(output || '[]');
+        const bubbles = [];
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row.text || !row.text.trim())
+                continue;
+            bubbles.push({
+                type: row.type,
+                text: row.text.trim(),
+                createdAt: typeof row.createdAt === 'number' ? row.createdAt : undefined,
+                order: i,
+            });
+        }
+        return rawBubblesToMessages(bubbles);
+    }
+    catch {
+        return [];
+    }
+}
+function getBubblesForComposerFromDb(globalDb, composerId) {
+    try {
+        const prefix = `bubbleId:${escapeSqlString(composerId)}:`;
         const res = globalDb.exec(`SELECT value FROM cursorDiskKV WHERE key LIKE '${prefix}%'`);
         if (res.length === 0 || res[0].values.length === 0)
             return [];
-        const rawBubbles = [];
+        const bubbles = [];
         for (let i = 0; i < res[0].values.length; i++) {
             const val = res[0].values[i][0];
             if (typeof val !== 'string')
@@ -135,7 +231,7 @@ function getBubblesForComposer(globalDb, composerId) {
                 const text = String(b.text ?? b.rawText ?? b.content ?? '').trim();
                 if (!text)
                     continue;
-                rawBubbles.push({
+                bubbles.push({
                     type: bType,
                     text,
                     createdAt: typeof b.createdAt === 'number' ? b.createdAt : undefined,
@@ -143,33 +239,16 @@ function getBubblesForComposer(globalDb, composerId) {
                 });
             }
             catch {
-                // skip unparseable
+                // skip
             }
         }
-        if (rawBubbles.length > 0 && rawBubbles[0].createdAt != null) {
-            rawBubbles.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
-        }
-        return rawBubbles.map(b => ({
-            role: b.type === 1 ? 'user' : 'assistant',
-            content: b.text,
-            timestamp: b.createdAt,
-        }));
+        return rawBubblesToMessages(bubbles);
     }
     catch {
         return [];
     }
 }
-function getAllBubblesForWorkspace(globalDb, composerIds) {
-    const results = [];
-    for (let ci = 0; ci < composerIds.length; ci++) {
-        const messages = getBubblesForComposer(globalDb, composerIds[ci]);
-        if (messages.length > 0) {
-            results.push({ composerIndex: ci, messages, name: composerIds[ci] });
-        }
-    }
-    return results;
-}
-async function extractDocumentsForSearch(extensionPath, progressCallback) {
+async function extractDocumentsForSearch(extensionPath, progressCallback, options) {
     const docs = [];
     const storagePath = getCursorStoragePath();
     if (!fs.existsSync(storagePath))
@@ -178,63 +257,70 @@ async function extractDocumentsForSearch(extensionPath, progressCallback) {
     const wasmBinary = fs.readFileSync(path.join(extensionPath, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'));
     const SQL = await (0, sql_js_1.default)({ wasmBinary: wasmBinary.buffer });
     const globalDbPath = getGlobalStoragePath();
+    const globalDbExists = fs.existsSync(globalDbPath);
+    report('Loading conversation data...');
+    let allBubbles = null;
     let globalDb = null;
-    if (fs.existsSync(globalDbPath)) {
-        try {
-            const globalBuf = fs.readFileSync(globalDbPath);
-            globalDb = new SQL.Database(new Uint8Array(globalBuf));
-        }
-        catch {
-            // ignore
+    if (globalDbExists) {
+        allBubbles = loadAllBubblesFromGlobalCli(globalDbPath);
+        if (!allBubbles) {
+            try {
+                const globalBuf = fs.readFileSync(globalDbPath);
+                globalDb = new SQL.Database(new Uint8Array(globalBuf));
+            }
+            catch {
+                // ignore
+            }
         }
     }
+    if (allBubbles) {
+        report(`Loaded ${allBubbles.size} conversation(s) from global storage.`);
+    }
+    const maxWorkspaces = options?.maxWorkspaces;
     const entries = fs.readdirSync(storagePath, { withFileTypes: true });
-    const dbDirs = entries.filter((e) => e.isDirectory()).map((e) => ({
+    const allDbDirs = entries.filter((e) => e.isDirectory()).map((e) => ({
         hash: e.name,
         workspaceDir: path.join(storagePath, e.name),
         dbPath: path.join(storagePath, e.name, 'state.vscdb'),
     })).filter((d) => fs.existsSync(d.dbPath));
+    const dbDirs = typeof maxWorkspaces === 'number' ? allDbDirs.slice(0, maxWorkspaces) : allDbDirs;
     report(`Scanning ${dbDirs.length} workspace(s)...`);
     for (let i = 0; i < dbDirs.length; i++) {
         const { hash, workspaceDir, dbPath } = dbDirs[i];
-        if (i % 20 === 0)
+        if (i % 50 === 0)
             report(`Scanning ${i + 1}/${dbDirs.length}...`);
         try {
             const fileBuffer = fs.readFileSync(dbPath);
             const db = new SQL.Database(new Uint8Array(fileBuffer));
             const workspacePath = getWorkspacePath(workspaceDir);
             const workspaceName = getWorkspaceName(workspaceDir);
-            let added = 0;
-            if (globalDb) {
+            if (globalDbExists) {
                 const composers = getComposerIdsFromDb(db);
-                if (composers.length > 0) {
-                    for (let ci = 0; ci < composers.length; ci++) {
-                        const composer = composers[ci];
-                        const messages = getBubblesForComposer(globalDb, composer.composerId);
-                        if (messages.length === 0)
-                            continue;
-                        const text = messages.map(m => m.content).join('\n');
-                        const firstUser = messages.find(m => m.role === 'user');
-                        const title = composer.name || (firstUser?.content ?? messages[0].content).slice(0, 120).replace(/\n/g, ' ');
-                        const lastTs = messages[messages.length - 1]?.timestamp ?? composer.lastUpdatedAt ?? composer.createdAt;
-                        docs.push({
-                            id: `${hash}::composer::${composer.composerId}`,
-                            text,
-                            workspaceHash: hash,
-                            tabIndex: ci,
-                            workspacePath,
-                            workspaceName,
-                            title,
-                            messageCount: messages.length,
-                            timestamp: lastTs,
-                        });
-                        added++;
-                    }
+                for (let ci = 0; ci < composers.length; ci++) {
+                    const composer = composers[ci];
+                    const messages = allBubbles
+                        ? (allBubbles.get(composer.composerId) ?? [])
+                        : (globalDb ? getBubblesForComposerFromDb(globalDb, composer.composerId) : []);
+                    if (messages.length === 0)
+                        continue;
+                    const text = messages.map(m => m.content).join('\n');
+                    const firstUser = messages.find(m => m.role === 'user');
+                    const title = composer.name || (firstUser?.content ?? messages[0].content).slice(0, 120).replace(/\n/g, ' ');
+                    const lastTs = messages[messages.length - 1]?.timestamp ?? composer.lastUpdatedAt ?? composer.createdAt;
+                    docs.push({
+                        id: `${hash}::composer::${composer.composerId}`,
+                        text,
+                        workspaceHash: hash,
+                        tabIndex: ci,
+                        workspacePath,
+                        workspaceName,
+                        title,
+                        messageCount: messages.length,
+                        timestamp: lastTs,
+                    });
                 }
             }
             db.close();
-            if (added > 0)
-                continue;
         }
         catch {
             // skip unreadable db
@@ -249,20 +335,21 @@ async function extractDocumentsForSearch(extensionPath, progressCallback) {
 async function getChatContentFromWorkspaceStorage(extensionPath, workspaceHash, tabIndex, composerId) {
     const wasmBinary = fs.readFileSync(path.join(extensionPath, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'));
     const SQL = await (0, sql_js_1.default)({ wasmBinary: wasmBinary.buffer });
-    if (composerId) {
-        const globalDbPath = getGlobalStoragePath();
-        if (fs.existsSync(globalDbPath)) {
-            try {
-                const globalBuf = fs.readFileSync(globalDbPath);
-                const globalDb = new SQL.Database(new Uint8Array(globalBuf));
-                const messages = getBubblesForComposer(globalDb, composerId);
-                globalDb.close();
-                if (messages.length > 0)
-                    return messages;
-            }
-            catch {
-                // fall through
-            }
+    const globalDbPath = getGlobalStoragePath();
+    if (composerId && fs.existsSync(globalDbPath)) {
+        const messages = getBubblesForComposerCli(globalDbPath, composerId);
+        if (messages.length > 0)
+            return messages;
+        try {
+            const globalBuf = fs.readFileSync(globalDbPath);
+            const globalDb = new SQL.Database(new Uint8Array(globalBuf));
+            const msgs = getBubblesForComposerFromDb(globalDb, composerId);
+            globalDb.close();
+            if (msgs.length > 0)
+                return msgs;
+        }
+        catch {
+            // ignore
         }
     }
     const storagePath = getCursorStoragePath();
@@ -273,20 +360,21 @@ async function getChatContentFromWorkspaceStorage(extensionPath, workspaceHash, 
     const wsDb = new SQL.Database(new Uint8Array(fileBuffer));
     const composers = getComposerIdsFromDb(wsDb);
     wsDb.close();
-    if (composers.length > 0 && tabIndex >= 0 && tabIndex < composers.length) {
-        const globalDbPath = getGlobalStoragePath();
-        if (fs.existsSync(globalDbPath)) {
-            try {
-                const globalBuf = fs.readFileSync(globalDbPath);
-                const globalDb = new SQL.Database(new Uint8Array(globalBuf));
-                const messages = getBubblesForComposer(globalDb, composers[tabIndex].composerId);
-                globalDb.close();
-                if (messages.length > 0)
-                    return messages;
-            }
-            catch {
-                // fall through
-            }
+    if (composers.length > 0 && tabIndex >= 0 && tabIndex < composers.length && fs.existsSync(globalDbPath)) {
+        const cid = composers[tabIndex].composerId;
+        const messages = getBubblesForComposerCli(globalDbPath, cid);
+        if (messages.length > 0)
+            return messages;
+        try {
+            const globalBuf = fs.readFileSync(globalDbPath);
+            const globalDb = new SQL.Database(new Uint8Array(globalBuf));
+            const msgs = getBubblesForComposerFromDb(globalDb, cid);
+            globalDb.close();
+            if (msgs.length > 0)
+                return msgs;
+        }
+        catch {
+            // ignore
         }
     }
     return [];
