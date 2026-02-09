@@ -1,0 +1,69 @@
+{
+  "name": "chat-searcher",
+  "displayName": "Chat Searcher",
+  "description": "Search across all your AI chat history with BM25 ranking. Works with Cursor, Windsurf, and other VS Code-based IDEs. Find any past conversation, view full chat with correct user/assistant roles, and copy to current chat.",
+  "version": "0.1.0",
+  "publisher": "alexandergo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexandergolbergwix/chat-searcher"
+  },
+  "homepage": "https://github.com/alexandergolbergwix/chat-searcher#readme",
+  "bugs": {
+    "url": "https://github.com/alexandergolbergwix/chat-searcher/issues"
+  },
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "chat",
+    "search",
+    "history",
+    "AI",
+    "BM25",
+    "conversation",
+    "cursor",
+    "windsurf",
+    "vscode"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "chatSearcher.search",
+        "title": "Chat Searcher: Search Chats"
+      },
+      {
+        "command": "chatSearcher.reindex",
+        "title": "Chat Searcher: Reindex All Chats"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "chatSearcher.search",
+        "key": "ctrl+shift+h",
+        "mac": "cmd+shift+h"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "sql.js": "^1.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/sql.js": "^1.4.9",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
