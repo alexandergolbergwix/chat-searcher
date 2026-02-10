@@ -503,6 +503,7 @@ export class ChatSearchPanel {
       flex: 1;
       overflow-y: auto;
       padding: 12px 20px;
+      min-height: 0;
     }
 
     .results-header {
@@ -635,6 +636,14 @@ export class ChatSearchPanel {
 
     .conversation-view.active {
       display: flex;
+    }
+
+    .results-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
     }
 
     .results-view.hidden {
