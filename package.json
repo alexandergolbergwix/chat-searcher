@@ -2,7 +2,7 @@
   "name": "chat-searcher",
   "displayName": "Chat Searcher",
   "description": "Never lose an AI conversation again. Instantly search all your chat history across every workspace. Works with Cursor, Windsurf, and other VS Code-based IDEs.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "alexandergo",
   "license": "MIT",
   "repository": {
