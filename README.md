@@ -2,7 +2,7 @@
 
 Never lose an AI conversation again. **Chat Searcher** indexes every chat across all your workspaces and lets you find any past conversation in seconds.
 
-Works with **Cursor**, **Windsurf**, and other VS Code-based IDEs.
+Works with **VS Code** (GitHub Copilot Chat), **Cursor**, **Windsurf**, and other VS Code-based IDEs.
 
 ## Why?
 
@@ -36,7 +36,23 @@ That's it. The index is built automatically the first time you open the search p
 | **Chat Searcher: Search Chats** | `Cmd+Shift+H` / `Ctrl+Shift+H` | Open the search panel |
 | **Chat Searcher: Reindex All Chats** | -- | Rebuild the index (run after new conversations) |
 
+## Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `chatSearcher.userDataDir` | empty | Full path to the IDE's `User` data folder (the folder that contains `workspaceStorage` and `globalStorage`). Leave empty to detect it from the running IDE. |
+
 ## How It Works
+
+Chat Searcher finds the running IDE's `User` data folder from the extension's own storage location, so it reads the right folder for VS Code, VS Code Insiders, Cursor, and other forks.
+
+**VS Code**
+
+1. Reads each chat session file in `workspaceStorage/<hash>/chatSessions/` (`.jsonl` in VS Code 1.109 and later, `.json` before) and in `globalStorage/emptyWindowChatSessions/`
+2. Reads session titles from each workspace's `state.vscdb`
+3. Builds a BM25 search index in memory
+
+**Cursor**
 
 1. Reads composer metadata from each workspace's local `state.vscdb` (small SQLite files, ~100KB each)
 2. Fetches all conversation bubbles from the global `state.vscdb` in a single query using `json_extract` -- extracting only the fields needed (role, text, timestamp), not the full multi-KB JSON blobs
@@ -47,6 +63,7 @@ The global storage database can be 2+ GB, but Chat Searcher never loads it into 
 
 ## Supported IDEs
 
+- VS Code and VS Code Insiders (GitHub Copilot Chat and other chat participants)
 - Cursor
 - Windsurf
 - Any VS Code-based IDE that stores AI chat in `workspaceStorage`/`globalStorage`
@@ -54,11 +71,11 @@ The global storage database can be 2+ GB, but Chat Searcher never loads it into 
 ## Requirements
 
 - macOS, Linux, or Windows
-- `sqlite3` CLI (pre-installed on macOS and most Linux distros; optional on Windows -- falls back to in-memory loading)
+- For Cursor only: `sqlite3` CLI version 3.33.0 or later (pre-installed on macOS and most Linux distros; optional on Windows -- falls back to in-memory loading for databases smaller than 2 GB)
 
 ## Privacy
 
-Chat Searcher is fully offline. It reads only local SQLite files on your machine. No network requests, no telemetry, no data collection.
+Chat Searcher is fully offline. It reads only local chat files and SQLite databases on your machine. No network requests, no telemetry, no data collection.
 
 ## License
 

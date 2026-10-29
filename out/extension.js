@@ -37,8 +37,23 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const searchPanel_1 = require("./searchPanel");
+const storagePaths_1 = require("./storagePaths");
 function activate(context) {
     const extensionPath = context.extensionPath;
+    const applyStorageConfig = () => {
+        (0, storagePaths_1.configureStorage)({
+            appName: vscode.env.appName,
+            globalStoragePath: context.globalStorageUri.fsPath,
+            workspaceStoragePath: context.storageUri?.fsPath,
+            userDataDirOverride: vscode.workspace.getConfiguration('chatSearcher').get('userDataDir'),
+        });
+    };
+    applyStorageConfig();
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('chatSearcher.userDataDir')) {
+            applyStorageConfig();
+        }
+    }));
     const searchCommand = vscode.commands.registerCommand('chatSearcher.search', () => {
         try {
             searchPanel_1.ChatSearchPanel.createOrShow(extensionPath);

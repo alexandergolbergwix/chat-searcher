@@ -1,8 +1,9 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
-import {execFileSync} from 'child_process';
-import initSqlJs, {Database} from 'sql.js';
+import initSqlJs, {Database, SqlJsStatic} from 'sql.js';
+import {errorMessage, IndexStats, readDatabase, recordError, resetSqliteCliSupport, runSqliteCli} from './dbUtil';
+import {fileUriToPath, getGlobalStateDbPath, getGlobalStorageDir, getUserDataDir, getWorkspaceStorageDir, isCursorHost, pathBasename} from './storagePaths';
+import {extractVsCodeDocuments, getVsCodeMessages, isVsCodeDocumentId} from './vscodeChatReader';
 
 export interface ChatMessage {
   role: string;
@@ -22,41 +23,16 @@ export interface IndexDocument {
   timestamp?: number;
 }
 
-function getCursorStoragePath(): string {
-  const home = os.homedir();
-  switch (os.platform()) {
-    case 'darwin':
-      return path.join(home, 'Library', 'Application Support', 'Cursor', 'User', 'workspaceStorage');
-    case 'linux':
-      return path.join(home, '.config', 'Cursor', 'User', 'workspaceStorage');
-    case 'win32':
-      return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Cursor', 'User', 'workspaceStorage');
-    default:
-      throw new Error(`Unsupported platform: ${os.platform()}`);
-  }
-}
-
-function getGlobalStoragePath(): string {
-  const home = os.homedir();
-  switch (os.platform()) {
-    case 'darwin':
-      return path.join(home, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb');
-    case 'linux':
-      return path.join(home, '.config', 'Cursor', 'User', 'globalStorage', 'state.vscdb');
-    case 'win32':
-      return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Cursor', 'User', 'globalStorage', 'state.vscdb');
-    default:
-      throw new Error(`Unsupported platform: ${os.platform()}`);
-  }
-}
-
 function getWorkspacePath(workspaceDir: string): string {
   try {
     const workspaceJsonPath = path.join(workspaceDir, 'workspace.json');
     if (fs.existsSync(workspaceJsonPath)) {
       const data = JSON.parse(fs.readFileSync(workspaceJsonPath, 'utf-8'));
-      if (data.folder) {
-        return decodeURIComponent(data.folder).replace(/^file:\/\//, '');
+      if (typeof data.folder === 'string' && data.folder) {
+        return fileUriToPath(data.folder);
+      }
+      if (typeof data.workspace === 'string' && data.workspace) {
+        return fileUriToPath(data.workspace);
       }
     }
   } catch {
@@ -67,7 +43,7 @@ function getWorkspacePath(workspaceDir: string): string {
 
 function getWorkspaceName(workspaceDir: string): string {
   const p = getWorkspacePath(workspaceDir);
-  return path.basename(p) || p;
+  return pathBasename(p).replace(/\.code-workspace$/i, '') || p;
 }
 
 function escapeSqlString(s: string): string {
@@ -123,7 +99,7 @@ function rawBubblesToMessages(bubbles: RawBubble[]): ChatMessage[] {
   }));
 }
 
-function loadAllBubblesFromGlobalCli(globalDbPath: string): Map<string, ChatMessage[]> | null {
+function loadAllBubblesFromGlobalCli(globalDbPath: string, stats?: IndexStats): Map<string, ChatMessage[]> | null {
   try {
     const sql = [
       "SELECT key,",
@@ -135,10 +111,7 @@ function loadAllBubblesFromGlobalCli(globalDbPath: string): Map<string, ChatMess
       "AND json_extract(value, '$.type') IN (1, 2)",
     ].join(' ');
 
-    const output = execFileSync('sqlite3', ['-json', globalDbPath, sql], {
-      maxBuffer: 200 * 1024 * 1024,
-      encoding: 'utf-8',
-    }).toString();
+    const output = runSqliteCli(globalDbPath, sql, 200 * 1024 * 1024);
 
     const rows = JSON.parse(output || '[]') as Array<{key: string; type: number; text: string; createdAt: number | null}>;
     const composerBubbles = new Map<string, RawBubble[]>();
@@ -169,7 +142,8 @@ function loadAllBubblesFromGlobalCli(globalDbPath: string): Map<string, ChatMess
       result.set(composerId, rawBubblesToMessages(bubbles));
     }
     return result;
-  } catch {
+  } catch (err) {
+    recordError(stats, errorMessage(err));
     return null;
   }
 }
@@ -187,10 +161,7 @@ function getBubblesForComposerCli(globalDbPath: string, composerId: string): Cha
       "AND json_extract(value, '$.type') IN (1, 2)",
     ].join(' ');
 
-    const output = execFileSync('sqlite3', ['-json', globalDbPath, sql], {
-      maxBuffer: 50 * 1024 * 1024,
-      encoding: 'utf-8',
-    }).toString();
+    const output = runSqliteCli(globalDbPath, sql, 50 * 1024 * 1024);
 
     const rows = JSON.parse(output || '[]') as Array<{type: number; text: string; createdAt: number | null}>;
     const bubbles: RawBubble[] = [];
@@ -244,8 +215,26 @@ function getBubblesForComposerFromDb(globalDb: Database, composerId: string): Ch
   }
 }
 
+function summarizeIndex(count: number, stats: IndexStats): string {
+  let summary = `Indexed ${count} conversation(s) from ${getUserDataDir()}.`;
+  if (stats.failed > 0) summary += ` ${stats.failed} file(s) could not be read.`;
+  if (stats.errors.length > 0) summary += ` First problem: ${stats.errors[0]}`;
+  return summary;
+}
+
 export interface ExtractDocumentsOptions {
   maxWorkspaces?: number;
+}
+
+function loadSqlJs(extensionPath: string): Promise<SqlJsStatic> {
+  const wasmBinary = fs.readFileSync(
+    path.join(extensionPath, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
+  );
+  return initSqlJs({wasmBinary: wasmBinary.buffer as ArrayBuffer});
+}
+
+function describeWorkspace(workspaceDir: string): {workspacePath: string; workspaceName: string} {
+  return {workspacePath: getWorkspacePath(workspaceDir), workspaceName: getWorkspaceName(workspaceDir)};
 }
 
 export async function extractDocumentsForSearch(
@@ -253,32 +242,55 @@ export async function extractDocumentsForSearch(
   progressCallback?: (message: string) => void,
   options?: ExtractDocumentsOptions
 ): Promise<IndexDocument[]> {
-  const docs: IndexDocument[] = [];
-  const storagePath = getCursorStoragePath();
-  if (!fs.existsSync(storagePath)) return docs;
-
   const report = (msg: string) => progressCallback?.(msg);
-  const wasmBinary = fs.readFileSync(
-    path.join(extensionPath, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
-  );
-  const SQL = await initSqlJs({wasmBinary: wasmBinary.buffer as ArrayBuffer});
+  const stats: IndexStats = {failed: 0, errors: []};
+  const storagePath = getWorkspaceStorageDir();
+  if (!fs.existsSync(storagePath)) {
+    report(`No chat storage found: ${storagePath} does not exist.`);
+    return [];
+  }
 
-  const globalDbPath = getGlobalStoragePath();
+  const SQL = await loadSqlJs(extensionPath);
+  let docs: IndexDocument[] = [];
+  // Cursor keeps chats in its own tables. VS Code keeps one file per chat session.
+  if (isCursorHost()) {
+    docs = docs.concat(extractCursorDocuments(SQL, storagePath, report, stats, options));
+  }
+  let vscodeDocs = extractVsCodeDocuments(SQL, storagePath, getGlobalStorageDir(), describeWorkspace, report, stats);
+  if (typeof options?.maxWorkspaces === 'number') {
+    const keep = new Set([...new Set(vscodeDocs.map((d) => d.workspaceHash))].slice(0, options.maxWorkspaces));
+    vscodeDocs = vscodeDocs.filter((d) => keep.has(d.workspaceHash));
+  }
+  docs = docs.concat(vscodeDocs);
+
+  report(summarizeIndex(docs.length, stats));
+  return docs;
+}
+
+function extractCursorDocuments(
+  SQL: SqlJsStatic,
+  storagePath: string,
+  report: (message: string) => void,
+  stats: IndexStats,
+  options?: ExtractDocumentsOptions
+): IndexDocument[] {
+  const docs: IndexDocument[] = [];
+  const globalDbPath = getGlobalStateDbPath();
   const globalDbExists = fs.existsSync(globalDbPath);
 
-  report('Loading conversation data...');
+  report('Loading Cursor conversation data...');
+  resetSqliteCliSupport();
 
   let allBubbles: Map<string, ChatMessage[]> | null = null;
   let globalDb: Database | null = null;
 
   if (globalDbExists) {
-    allBubbles = loadAllBubblesFromGlobalCli(globalDbPath);
+    allBubbles = loadAllBubblesFromGlobalCli(globalDbPath, stats);
     if (!allBubbles) {
       try {
-        const globalBuf = fs.readFileSync(globalDbPath);
-        globalDb = new SQL.Database(new Uint8Array(globalBuf));
-      } catch {
-        // ignore
+        globalDb = readDatabase(SQL, globalDbPath);
+      } catch (err) {
+        recordError(stats, `Cannot load ${globalDbPath}: ${errorMessage(err)}`);
       }
     }
   }
@@ -296,14 +308,13 @@ export async function extractDocumentsForSearch(
   })).filter((d) => fs.existsSync(d.dbPath));
   const dbDirs = typeof maxWorkspaces === 'number' ? allDbDirs.slice(0, maxWorkspaces) : allDbDirs;
 
-  report(`Scanning ${dbDirs.length} workspace(s)...`);
+  report(`Scanning ${dbDirs.length} Cursor workspace(s)...`);
 
   for (let i = 0; i < dbDirs.length; i++) {
     const {hash, workspaceDir, dbPath} = dbDirs[i];
     if (i % 50 === 0) report(`Scanning ${i + 1}/${dbDirs.length}...`);
     try {
-      const fileBuffer = fs.readFileSync(dbPath);
-      const db = new SQL.Database(new Uint8Array(fileBuffer));
+      const db = readDatabase(SQL, dbPath);
       const workspacePath = getWorkspacePath(workspaceDir);
       const workspaceName = getWorkspaceName(workspaceDir);
 
@@ -336,8 +347,9 @@ export async function extractDocumentsForSearch(
       }
 
       db.close();
-    } catch {
-      // skip unreadable db
+    } catch (err) {
+      stats.failed++;
+      recordError(stats, `Cannot read ${dbPath}: ${errorMessage(err)}`);
     }
   }
 
@@ -345,7 +357,6 @@ export async function extractDocumentsForSearch(
     globalDb.close();
   }
 
-  report(`Indexed ${docs.length} conversation(s).`);
   return docs;
 }
 
@@ -355,18 +366,17 @@ export async function getChatContentFromWorkspaceStorage(
   tabIndex: number,
   composerId?: string
 ): Promise<ChatMessage[]> {
-  const wasmBinary = fs.readFileSync(
-    path.join(extensionPath, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
-  );
-  const SQL = await initSqlJs({wasmBinary: wasmBinary.buffer as ArrayBuffer});
-  const globalDbPath = getGlobalStoragePath();
+  if (composerId && isVsCodeDocumentId(composerId)) {
+    return getVsCodeMessages(composerId);
+  }
+  const SQL = await loadSqlJs(extensionPath);
+  const globalDbPath = getGlobalStateDbPath();
 
   if (composerId && fs.existsSync(globalDbPath)) {
     const messages = getBubblesForComposerCli(globalDbPath, composerId);
     if (messages.length > 0) return messages;
     try {
-      const globalBuf = fs.readFileSync(globalDbPath);
-      const globalDb = new SQL.Database(new Uint8Array(globalBuf));
+      const globalDb = readDatabase(SQL, globalDbPath);
       const msgs = getBubblesForComposerFromDb(globalDb, composerId);
       globalDb.close();
       if (msgs.length > 0) return msgs;
@@ -375,22 +385,25 @@ export async function getChatContentFromWorkspaceStorage(
     }
   }
 
-  const storagePath = getCursorStoragePath();
+  const storagePath = getWorkspaceStorageDir();
   const wsDbPath = path.join(storagePath, workspaceHash, 'state.vscdb');
   if (!fs.existsSync(wsDbPath)) return [];
 
-  const fileBuffer = fs.readFileSync(wsDbPath);
-  const wsDb = new SQL.Database(new Uint8Array(fileBuffer));
-  const composers = getComposerIdsFromDb(wsDb);
-  wsDb.close();
+  let composers: ComposerMeta[];
+  try {
+    const wsDb = readDatabase(SQL, wsDbPath);
+    composers = getComposerIdsFromDb(wsDb);
+    wsDb.close();
+  } catch {
+    return [];
+  }
 
   if (composers.length > 0 && tabIndex >= 0 && tabIndex < composers.length && fs.existsSync(globalDbPath)) {
     const cid = composers[tabIndex].composerId;
     const messages = getBubblesForComposerCli(globalDbPath, cid);
     if (messages.length > 0) return messages;
     try {
-      const globalBuf = fs.readFileSync(globalDbPath);
-      const globalDb = new SQL.Database(new Uint8Array(globalBuf));
+      const globalDb = readDatabase(SQL, globalDbPath);
       const msgs = getBubblesForComposerFromDb(globalDb, cid);
       globalDb.close();
       if (msgs.length > 0) return msgs;

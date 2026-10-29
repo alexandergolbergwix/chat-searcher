@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import {BM25Index, SearchDocument} from './bm25';
 import {extractDocumentsForSearch, getChatContentFromWorkspaceStorage} from './chatExtractor';
 import {injectChatIntoCurrentWorkspace, formatConversationAsMarkdown} from './workspaceChatInjector';
+import {pathBasename} from './storagePaths';
+
+function modifierKey(): string {
+  return process.platform === 'darwin' ? 'Cmd' : 'Ctrl';
+}
 
 interface IndexedMeta {
   workspaceHash: string;
@@ -96,7 +101,9 @@ export class ChatSearchPanel {
     });
 
     try {
+      let lastStatus = '';
       const docs = await extractDocumentsForSearch(this.extensionPath, (msg) => {
+        lastStatus = msg;
         this.panel.webview.postMessage({type: 'status', message: msg});
       });
 
@@ -112,7 +119,8 @@ export class ChatSearchPanel {
         this.indexedMeta.set(doc.id, {
           workspaceHash: doc.workspaceHash,
           tabIndex: doc.tabIndex,
-          composerId: composerMatch ? composerMatch[1] : undefined,
+          // VS Code sessions are looked up by their full document id.
+          composerId: composerMatch ? composerMatch[1] : (doc.id.includes('::vscode::') ? doc.id : undefined),
           workspacePath: doc.workspacePath,
           workspaceName: doc.workspaceName,
           title: doc.title,
@@ -140,13 +148,15 @@ export class ChatSearchPanel {
 
       this.panel.webview.postMessage({
         type: 'status',
-        message: `Ready! ${this.bm25Index.size} chat tab(s) indexed.`,
+        message: this.bm25Index.size > 0
+          ? `Ready! ${this.bm25Index.size} chat tab(s) indexed.`
+          : `No chats found. ${lastStatus}`,
       });
 
       const workspaceSet = new Set<string>();
       for (const [, meta] of this.indexedMeta) {
         if (meta.workspacePath) {
-          workspaceSet.add(meta.workspaceName || meta.workspacePath.split('/').pop() || meta.workspacePath);
+          workspaceSet.add(meta.workspaceName || pathBasename(meta.workspacePath));
         }
       }
       const workspaces = [...workspaceSet].sort();
@@ -183,7 +193,7 @@ export class ChatSearchPanel {
       const m = result.metadata || {};
       if (!meta) return null;
 
-      const wsName = m.workspaceName as string || meta.workspaceName || (meta.workspacePath && meta.workspacePath.split('/').pop()) || meta.workspacePath;
+      const wsName = m.workspaceName as string || meta.workspaceName || (meta.workspacePath && pathBasename(meta.workspacePath)) || meta.workspacePath;
       if (workspaceFilter && workspaceFilter !== 'all' && wsName !== workspaceFilter) {
         return null;
       }
@@ -266,7 +276,7 @@ export class ChatSearchPanel {
       if (result.injected) {
         this.panel.webview.postMessage({
           type: 'toast',
-          message: 'Chat added to this workspace. Reload the window (Cmd+Shift+P > Developer: Reload Window) to see it in chat.',
+          message: `Chat added to this workspace. Reload the window (${modifierKey()}+Shift+P > Developer: Reload Window) to see it in chat.`,
         });
         try {
           await vscode.commands.executeCommand('workbench.action.chat.open');
@@ -281,7 +291,7 @@ export class ChatSearchPanel {
     await vscode.env.clipboard.writeText(text);
     this.panel.webview.postMessage({
       type: 'toast',
-      message: 'Copied to clipboard. Paste into chat with Cmd+V.',
+      message: `Copied to clipboard. Paste into chat with ${modifierKey()}+V.`,
     });
     try {
       await vscode.commands.executeCommand('workbench.action.chat.open');

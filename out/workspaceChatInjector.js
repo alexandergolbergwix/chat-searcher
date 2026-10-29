@@ -43,21 +43,8 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const crypto = __importStar(require("crypto"));
 const sql_js_1 = __importDefault(require("sql.js"));
+const storagePaths_1 = require("./storagePaths");
 const CHAT_KEY = 'workbench.panel.aichat.view.aichat.chatdata';
-function getCursorStoragePath() {
-    const platform = os.platform();
-    const home = os.homedir();
-    switch (platform) {
-        case 'darwin':
-            return path.join(home, 'Library', 'Application Support', 'Cursor', 'User', 'workspaceStorage');
-        case 'linux':
-            return path.join(home, '.config', 'Cursor', 'User', 'workspaceStorage');
-        case 'win32':
-            return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Cursor', 'User', 'workspaceStorage');
-        default:
-            throw new Error(`Unsupported platform: ${platform}`);
-    }
-}
 function computeWorkspaceStorageHash(workspaceFolderPath) {
     const stat = fs.statSync(workspaceFolderPath);
     const salt = os.platform() === 'linux' ? String(stat.ino) : String(stat.birthtimeMs);
@@ -73,11 +60,15 @@ function messagesToBubbles(messages) {
     }));
 }
 async function injectChatIntoCurrentWorkspace(extensionPath, workspaceFolderPath, messages, title) {
+    // The chat tab format written below is Cursor's. Other IDEs fall back to the clipboard.
+    if (!(0, storagePaths_1.isCursorHost)()) {
+        return { injected: false, error: 'Adding chats to the workspace is only supported in Cursor' };
+    }
     const bubbles = messagesToBubbles(messages);
     if (bubbles.length === 0) {
         return { injected: false, error: 'No messages to copy' };
     }
-    const storagePath = getCursorStoragePath();
+    const storagePath = (0, storagePaths_1.getWorkspaceStorageDir)();
     if (!fs.existsSync(storagePath)) {
         return { injected: false, error: 'Cursor workspace storage not found' };
     }

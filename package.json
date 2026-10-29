@@ -1,7 +1,7 @@
 {
   "name": "chat-searcher",
   "displayName": "Chat Searcher",
-  "description": "Never lose an AI conversation again. Instantly search all your chat history across every workspace. Works with Cursor, Windsurf, and other VS Code-based IDEs.",
+  "description": "Never lose an AI conversation again. Instantly search all your chat history across every workspace. Works with VS Code (GitHub Copilot Chat), Cursor, Windsurf, and other VS Code-based IDEs.",
   "version": "0.1.3",
   "publisher": "alexandergo",
   "license": "MIT",
@@ -28,8 +28,13 @@
     "BM25",
     "conversation",
     "cursor",
+    "copilot",
     "windsurf",
     "vscode"
+  ],
+  "extensionKind": [
+    "ui",
+    "workspace"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
@@ -50,7 +55,18 @@
         "key": "ctrl+shift+h",
         "mac": "cmd+shift+h"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Chat Searcher",
+      "properties": {
+        "chatSearcher.userDataDir": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Full path to the IDE's `User` data folder (the folder that contains `workspaceStorage` and `globalStorage`). Leave empty to detect it from the running IDE. Example: `C:\\Users\\me\\AppData\\Roaming\\Code\\User`."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
